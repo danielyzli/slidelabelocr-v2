@@ -237,11 +237,11 @@ class TiffEntry(object):
             return ''.join(items[:-1])
         else:
             return items
-	
+
     def spaceout(self, position, length):
         self._fh.seek(self.realstart + position)
         self._fh.write(' ' * length)
-		
+
 
 class MrxsFile(object):
     def __init__(self, filename):
