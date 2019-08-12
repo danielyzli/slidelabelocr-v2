@@ -1,6 +1,7 @@
 # Labelocr - v2
 # For V* H&E slides (and BT?)
 # By Daniel Li, 2019-07-11
+# Edited by Samantha Lee, 2019-08-11
 import argparse as ap
 import numpy as np
 from PIL import Image as im, ImageFilter as imf, ImageEnhance as ime
@@ -39,7 +40,7 @@ bwLabelImage = ime.Contrast(bwLabelImage).enhance(15)
 
 bwLabelImage = bwLabelImage.rotate(-90, expand = 1)
 
-# Begin deskewing
+# Begin deskewing, based on histogram area minimization of black ink
 def find_score(arr, angle):
     data = inter.rotate(arr, angle, reshape=False, order=0)
     hist = np.sum(data, axis=1)
@@ -63,35 +64,56 @@ rotatedImageCV = inter.rotate(bwLabelImage, best_angle, reshape=False, order=0)
 rotatedImage = im.fromarray(rotatedImageCV)
 rotatedImage.show()
 
-# find white area
+# find white area to do a primary boxing of the area based on estimate of top left most white pixel
+# this eliminates any irrelevant white pixels
 thresh = cv2.threshold(rotatedImageCV, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
 whitePixels = np.where(thresh > 0)
-firstCropImage = rotatedImage.crop((min(whitePixels[1]) - 5, min(whitePixels[0]) - 5, min(whitePixels[1]) + 560, min(whitePixels[0]) + 400))
+leftBuffer = 5
+topBuffer = 5
+rightEstimate = 560
+bottomEstimate = 400
+firstCropImage = rotatedImage.crop((min(whitePixels[1]) - leftBuffer, min(whitePixels[0]) - topBuffer, min(whitePixels[1]) + rightEstimate, min(whitePixels[0]) + bottomEstimate))
 firstCropImage.show()
-# find white area again
+# find white area again, to refine the framing based on the actual corner pixels
 whitePixels2 = np.where(gPIL2CV(firstCropImage) > 0)
 secondCropImage = firstCropImage.crop((min(whitePixels2[1]), min(whitePixels2[0]), max(whitePixels2[1]), max(whitePixels2[0])))
 secondCropImage.show()
 
 # Use magic numbers to find area of relevant labels
-relevantTextImage = secondCropImage.crop((30, 46, 520, 108))
-# relevantTextImage.show()
 
-bigRelevantTextImage = relevantTextImage.resize((490*4, 62*4))
+leftText = 30
+topText = 46
+rightText = 520
+bottomText = 108
+
+relevantTextImage = secondCropImage.crop((leftText, topText, rightText, bottomText))
+relevantTextImage.show()
+
+
+## -- Begin the pampering of pytesseract using multiple methods --
+#scaling the image to pamper pytesseract
+scale = 4
+bigRelevantTextImage = relevantTextImage.resize(((rightText - leftText)*scale, (bottomText - topText)*scale))
 # bigRelevantTextImage.show()
 
 #confidences = []
 #for blurRadius in np.arange(0, 8, 0.1):
 
-bigBlurredRelevantTextImage = bigRelevantTextImage.filter(imf.GaussianBlur(radius=5)).point(lambda x: 0 if x < 180 else 255)
+#blurring the image a tad to bridge the broken letters
+blurRadiusFactor = 5
+bigBlurredRelevantTextImage = bigRelevantTextImage.filter(imf.GaussianBlur(radius=blurRadiusFactor)).point(lambda x: 0 if x < 180 else 255)
 # bigBlurredRelevantTextImage.show()
 
-bigFirstPartBlurredRelevantTextImage = bigBlurredRelevantTextImage.crop((0, 0, 1300, 62*4))
-bigSecondPartBlurredRelevantTextImage = bigBlurredRelevantTextImage.crop((1565, 0, 490*4, 62*4))
+#cut between the sample ID and slide number
+cutBetween = 1300 #somewhere in the middle of the blank space
+bigFirstPartBlurredRelevantTextImage = bigBlurredRelevantTextImage.crop((0, 0, cutBetween, (bottomText - topText)*scale))
+bigSecondPartBlurredRelevantTextImage = bigBlurredRelevantTextImage.crop((cutBetween, 0, (rightText - leftText)*scale, (bottomText - topText)*scale))
 bigFirstPartBlurredRelevantTextImage.show()
 bigSecondPartBlurredRelevantTextImage.show()
 BFPBRTImageCV = gPIL2CV(bigFirstPartBlurredRelevantTextImage)
 BSPBRTImageCV = gPIL2CV(bigSecondPartBlurredRelevantTextImage)
+
+#further cleaning of letters with erosion to make the letters crisp
 kernel = np.ones((5,5),np.uint8)
 erodedImage1 = im.fromarray(cv2.bitwise_not(cv2.erode(cv2.bitwise_not(BFPBRTImageCV),kernel,iterations = 4)))
 erodedImage1.show()
