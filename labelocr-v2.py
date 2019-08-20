@@ -1,6 +1,7 @@
 # Labelocr - v2
 # For V* H&E slides (and BT?)
 # By Daniel Li, 2019-07-11
+
 import argparse as ap
 import numpy as np
 from PIL import Image as im, ImageFilter as imf, ImageEnhance as ime
@@ -12,79 +13,85 @@ import re
 from matplotlib import pyplot as plt
 from scipy.ndimage import interpolation as inter
 
+# Function for general PIL to CV conversion
 def gPIL2CV(pilImage):
 	return np.array(pilImage)
 
-#originalImage = osi.OpenSlide("/home/luckypotato/github/slidelabelocr-v2/test/20190703T172158-747166483.tiff")
-#labelImage = originalImage.associated_images['label']
-#bwLabelImage = labelImage.convert('L')
+# Function for general CV to PIL conversion
+def gCV2PIL(cvImage):
+	return im.fromarray(cvImage)
 
-originalImage = im.open("/home/luckypotato/github/slidelabelocr-v2/test2/10.tiff")
-#originalImage.show()
-bwLabelImage = originalImage.convert('L')
-
-#brighten image and enhance contrast
-bwLabelImage = ime.Brightness(bwLabelImage).enhance(0.3)
-bwLabelImage = ime.Contrast(bwLabelImage).enhance(15)
-bwLabelImage = ime.Brightness(bwLabelImage).enhance(0.3)
-bwLabelImage = ime.Contrast(bwLabelImage).enhance(15)
-
-
-# Binarize
-# cvBwLabelImage = gPIL2CV(bwLabelImage)
-# cvBinaryLabelImage = cv2.adaptiveThreshold(cvBwLabelImage, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, \
-											# cv2.THRESH_BINARY, 11, -8)
-# binaryLabelImage = im.fromarray(cvBinaryLabelImage)
-# binaryLabelImage.show()
-
-bwLabelImage = bwLabelImage.rotate(-90, expand = 1)
-
-# Begin deskewing
+# Function for helping deskew by histogram method
 def find_score(arr, angle):
     data = inter.rotate(arr, angle, reshape=False, order=0)
     hist = np.sum(data, axis=1)
     score = np.sum((hist[1:] - hist[:-1]) ** 2)
     return hist, score
 
-delta = 0.5
-limit = 45
+# Open image (slides)
+#originalImage = osi.OpenSlide("/home/luckypotato/github/slidelabelocr-v2/test/20190703T172158-747166483.tiff")
+#labelImage = originalImage.associated_images['label']
+#grayImage = labelImage.convert('L')
+
+# Open image (testing)
+originalImage = im.open("/home/luckypotato/github/slidelabelocr-v2/test2/9.tiff")
+grayImage = originalImage.convert('L')
+
+# Brightness and contrast
+grayImage = ime.Brightness(grayImage).enhance(0.3)
+grayImage = ime.Contrast(grayImage).enhance(15)
+grayImage = ime.Brightness(grayImage).enhance(0.3)
+grayImage = ime.Contrast(grayImage).enhance(15)
+
+# Rotate image
+grayImage = grayImage.rotate(-90, expand = 1)
+
+# Find angle to deskew
+delta = 0.5 # 0.5 degree increments
+limit = 45 # Check from -45 to 45 degrees rotation
 angles = np.arange(-limit, limit+delta, delta)
 scores = []
 for angle in angles:
-    hist, score = find_score(bwLabelImage, angle)
+    hist, score = find_score(grayImage, angle)
     scores.append(score)
-#plt.plot(scores, angles)
 best_score = max(scores)
-print(best_score)
 best_angle = angles[scores.index(best_score)]
-print(best_angle)
-# correct skew
-rotatedImageCV = inter.rotate(bwLabelImage, best_angle, reshape=False, order=0)
-rotatedImage = im.fromarray(rotatedImageCV)
-rotatedImage.show()
 
-# find white area
-thresh = cv2.threshold(rotatedImageCV, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-whitePixels = np.where(thresh > 0)
-firstCropImage = rotatedImage.crop((min(whitePixels[1]) - 5, min(whitePixels[0]) - 5, min(whitePixels[1]) + 560, min(whitePixels[0]) + 400))
-firstCropImage.show()
-# find white area again
-whitePixels2 = np.where(gPIL2CV(firstCropImage) > 0)
-secondCropImage = firstCropImage.crop((min(whitePixels2[1]), min(whitePixels2[0]), max(whitePixels2[1]), max(whitePixels2[0])))
-secondCropImage.show()
+# Rotate image to deskew
+dskwImage = inter.rotate(grayImage, best_angle, reshape=False, order=0)
 
-# Use magic numbers to find area of relevant labels
-relevantTextImage = secondCropImage.crop((30, 46, 520, 108))
-relevantTextImage.show()
-bigRelevantTextImage = relevantTextImage.resize((490*4, 62*4))
-bigRelevantTextImage.show()
-bigBlurredRelevantTextImage = bigRelevantTextImage.filter(imf.GaussianBlur(radius=5)).point(lambda x: 0 if x < 180 else 255)
-bigBlurredRelevantTextImage.show()
-bigFirstPartBlurredRelevantTextImage = bigBlurredRelevantTextImage.crop((0, 0, 1300, 62*4))
-bigSecondPartBlurredRelevantTextImage = bigBlurredRelevantTextImage.crop((1300, 0, 490*4, 62*4))
-bigFirstPartBlurredRelevantTextImage.show()
-bigSecondPartBlurredRelevantTextImage.show()
-data2 = pytesseract.image_to_data(bigSecondPartBlurredRelevantTextImage, output_type = pytesseract.Output.DICT)
-data = pytesseract.image_to_data(bigFirstPartBlurredRelevantTextImage, output_type = pytesseract.Output.DICT)
-print(data)
-print(data2)
+# Crop into (expected, padded) bounding box of label sticker
+threshImage = cv2.threshold(dskwImage, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+whiteMask1 = np.where(threshImage > 0)
+cropImage1 = gCV2PIL(dskwImage).crop((min(whiteMask1[1]) - 5, min(whiteMask1[0]) - 5, min(whiteMask1[1]) + 560, min(whiteMask1[0]) + 400))
+
+# Refine crop of label sticker
+whiteMask2 = np.where(gPIL2CV(cropImage1) > 0)
+cropImage2 = cropImage1.crop((min(whiteMask2[1]), min(whiteMask2[0]), max(whiteMask2[1]), max(whiteMask2[0])))
+
+# Crop into relevant label text on the sticker (coordinates should remain consistent across images)
+textImage = cropImage2.crop((30, 46, 520, 108))
+
+# Upscale for pytesseract
+upscaledTextImage = textImage.resize((490*4, 62*4))
+
+# Blur + threshold, and erode to connect gaps in letters
+blurThreshImage = upscaledTextImage.filter(imf.GaussianBlur(radius = 5)).point(lambda x: 0 if x < 180 else 255)
+erosionKernel = np.ones((5, 5), np.uint8)
+erodedImage = gCV2PIL(cv2.bitwise_not(cv2.erode(cv2.bitwise_not(gPIL2CV(blurThreshImage)), erosionKernel, iterations = 3)))
+
+# Extract first and second text blocks and add padding
+textBlockImage1 = erodedImage.crop((0, 0, 1300, 62*4))
+textBlockImage1 = gCV2PIL(cv2.bitwise_not(cv2.copyMakeBorder(cv2.bitwise_not(gPIL2CV(textBlockImage1)), 50, 50, 50, 50, cv2.BORDER_CONSTANT)))
+textBlockImage2 = erodedImage.crop((1565, 0, 490*4, 62*4))
+textBlockImage2 = gCV2PIL(cv2.bitwise_not(cv2.copyMakeBorder(cv2.bitwise_not(gPIL2CV(textBlockImage2)), 50, 50, 50, 50, cv2.BORDER_CONSTANT)))
+textBlockImage2.show()
+
+# Set up tesseract path for pytesseract
+pytesseract.pytesseract.tesseract_cmd = '/usr/local/bin/tesseract'
+
+# Run tesseract
+patientData = pytesseract.image_to_data(textBlockImage1, output_type = pytesseract.Output.DICT, config='-c tessedit_char_whitelist=0123456789BTACDEFG-')
+print(patientData)
+blockSliceData = pytesseract.image_to_data(textBlockImage2, output_type = pytesseract.Output.DICT, config='-c tessedit_char_whitelist=0123456789ABCDEFG')
+print(blockSliceData)
